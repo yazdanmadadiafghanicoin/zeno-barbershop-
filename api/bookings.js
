@@ -5,18 +5,11 @@ import { randomUUID } from "node:crypto";
 const { Pool } = pg;
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString:
+    process.env.DATABASE_URL || process.env.POSTGRES_URL,
   ssl: { rejectUnauthorized: false },
   max: 2
 });
-
-const services = [
-  "haircut",
-  "beard",
-  "haircut_beard",
-  "wash",
-  "other"
-];
 
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
@@ -24,28 +17,28 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({
       ok: false,
-      error: "فقط درخواست POST مجاز است."
+      error: "روش درخواست مجاز نیست."
     });
   }
 
   const { name, phone, service, date, time } = req.body || {};
 
-  if (
-    typeof name !== "string" ||
-    typeof phone !== "string" ||
-    !name.trim() ||
-    !phone.trim() ||
-    name.length > 80 ||
-    phone.length > 20 ||
-    !services.includes(service)
-  ) {
-    return res.status(400).json({
-      ok: false,
-      error: "اطلاعات مشتری یا خدمات معتبر نیست."
-    });
-  }
+  const services = [
+    "haircut",
+    "beard",
+    "haircut_beard",
+    "wash",
+    "other"
+  ];
 
   if (
+    typeof name !== "string" ||
+    !name.trim() ||
+    name.trim().length > 80 ||
+    typeof phone !== "string" ||
+    !phone.trim() ||
+    phone.trim().length > 20 ||
+    !services.includes(service) ||
     typeof date !== "string" ||
     !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
     typeof time !== "string" ||
@@ -53,43 +46,40 @@ export default async function handler(req, res) {
   ) {
     return res.status(400).json({
       ok: false,
-      error: "تاریخ یا ساعت نوبت معتبر نیست."
+      error: "اطلاعات واردشده معتبر نیست."
     });
   }
 
-  const [year, month, day] = date.split("-").map(Number);
-  const parsedDate = new Date(Date.UTC(year, month - 1, day));
+  const [y, m, d] = date.split("-").map(Number);
+  const checkDate = new Date(Date.UTC(y, m - 1, d));
 
   if (
-    parsedDate.getUTCFullYear() !== year ||
-    parsedDate.getUTCMonth() !== month - 1 ||
-    parsedDate.getUTCDate() !== day
+    checkDate.getUTCFullYear() !== y ||
+    checkDate.getUTCMonth() !== m - 1 ||
+    checkDate.getUTCDate() !== d
   ) {
     return res.status(400).json({
       ok: false,
-      error: "تاریخ انتخاب‌شده معتبر نیست."
+      error: "تاریخ معتبر نیست."
     });
   }
 
-  const now = new Date();
-  const afghanistanNow = new Date(
-    now.getTime() + 270 * 60 * 1000
-  );
-
+  const now = new Date(Date.now() + 270 * 60000);
   const today = [
-    afghanistanNow.getUTCFullYear(),
-    String(afghanistanNow.getUTCMonth() + 1).padStart(2, "0"),
-    String(afghanistanNow.getUTCDate()).padStart(2, "0")
+    now.getUTCFullYear(),
+    String(now.getUTCMonth() + 1).padStart(2, "0"),
+    String(now.getUTCDate()).padStart(2, "0")
   ].join("-");
 
-  if (date < today || (date === today && time <=
-    String(afghanistanNow.getUTCHours()).padStart(2, "0") +
+  const currentTime =
+    String(now.getUTCHours()).padStart(2, "0") +
     ":" +
-    String(afghanistanNow.getUTCMinutes()).padStart(2, "0")
-  )) {
+    String(now.getUTCMinutes()).padStart(2, "0");
+
+  if (date < today || (date === today && time <= currentTime)) {
     return res.status(400).json({
       ok: false,
-      error: "لطفاً یک زمان آینده انتخاب کنید."
+      error: "زمان انتخاب‌شده گذشته است."
     });
   }
 
@@ -113,13 +103,12 @@ export default async function handler(req, res) {
 
     await client.query("BEGIN");
 
-    // جلوگیری از ثبت هم‌زمان بیش از دو نوبت
     await client.query(
       "SELECT pg_advisory_xact_lock(hashtext($1))",
       [`zeno-${date}-${time}`]
     );
 
-    const result = await client.query(
+    const count = await client.query(
       `SELECT COUNT(*)::int AS total
        FROM zeno_bookings
        WHERE booking_date = $1
@@ -128,12 +117,12 @@ export default async function handler(req, res) {
       [date, time]
     );
 
-    if (result.rows[0].total >= 2) {
+    if (count.rows[0].total >= 2) {
       await client.query("ROLLBACK");
 
       return res.status(409).json({
         ok: false,
-        error: "ظرفیت این ساعت تکمیل شده است. ساعت دیگری انتخاب کنید."
+        error: "این ساعت تکمیل شده است."
       });
     }
 
@@ -141,7 +130,8 @@ export default async function handler(req, res) {
 
     await client.query(
       `INSERT INTO zeno_bookings
-       (id, customer_name, phone, service, booking_date, booking_time)
+       (id, customer_name, phone, service,
+        booking_date, booking_time)
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [
         bookingId,
@@ -157,7 +147,7 @@ export default async function handler(req, res) {
 
     return res.status(201).json({
       ok: true,
-      message: "درخواست نوبت ثبت شد.",
+      message: "نوبت شما ثبت شد.",
       bookingId
     });
 
@@ -166,11 +156,11 @@ export default async function handler(req, res) {
       await client.query("ROLLBACK").catch(() => {});
     }
 
-    console.error("ZENO booking error:", error);
+    console.error("ZENO ERROR:", error);
 
     return res.status(500).json({
       ok: false,
-      error: "خطا در ثبت نوبت. لطفاً دوباره تلاش کنید."
+      error: "خطا در ثبت نوبت."
     });
 
   } finally {
