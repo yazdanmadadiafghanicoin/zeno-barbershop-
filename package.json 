@@ -1,0 +1,14 @@
+
+{
+  "name": "zeno-barbershop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ZENO BARBERSHOP Online Appointment System",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  }
+}
